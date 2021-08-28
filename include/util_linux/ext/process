@@ -1,0 +1,475 @@
+﻿/**
+ * @file process
+ * @author Jung-kang Lee (ntoskrnl7@gmail.com)
+ * @brief This module implements process class.
+ *
+ * @copyright Copyright (c) 2020 C++ Extended template library Authors
+ *
+ */
+#pragma once
+
+#ifdef CXX_USE_BOOST
+#define CXX_USE_STD_THREAD
+#include <boost/thread/thread.hpp>
+#endif // CXX_USE_BOOST
+
+#define CXX_USE_STD_MOVE
+#include "stl_compat"
+
+#if (!defined(CXX_STD_THREAD_NOT_SUPPORTED)) || defined(_EXT_STD_THREAD_)
+#ifndef _EXT_PROCESS_
+#define _EXT_PROCESS_
+
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <Windows.h>
+#else
+#include <csignal>
+#include <limits.h>
+#include <string.h>
+#include <sys/wait.h>
+
+#endif
+
+#include <list>
+#include <string>
+
+#include "pipe"
+
+#if !defined(CXX_STD_THREAD_NOT_SUPPORTED)
+#include <thread>
+#endif
+
+#if defined(__APPLE__) || defined(__FreeBSD__)
+#include <libproc.h>
+#endif
+
+namespace ext {
+/**
+ * @brief The process class
+ *
+ */
+class process {
+private:
+#if defined(_WIN32)
+  typedef DWORD native_id_type;
+  typedef HANDLE native_handle_type;
+  typedef DWORD native_error_code;
+  typedef DWORD native_exit_code;
+  static CXX_CONSTEXPR const native_id_type invalid_id = 0;
+  static CXX_CONSTEXPR const native_error_code no_error = 0;
+  static CXX_CONSTEXPR const native_exit_code exit_success = 0;
+#else
+  typedef pid_t native_id_type;
+  typedef native_id_type native_handle_type;
+  typedef int native_error_code;
+  typedef int native_exit_code;
+  static CXX_CONSTEXPR const native_id_type invalid_id = -1;
+  static CXX_CONSTEXPR const native_error_code no_error = 0;
+  static CXX_CONSTEXPR const native_exit_code exit_success = 0;
+#endif
+public:
+  class id {
+  public:
+    id() : id_(invalid_id) {}
+    id(native_id_type id) : id_(id) {}
+
+    friend bool operator==(process::id lhs, process::id rhs) CXX_NOEXCEPT {
+      return lhs.id_ == rhs.id_;
+    }
+
+    friend bool operator<(process::id lhs, process::id rhs) CXX_NOEXCEPT {
+      return lhs.id_ < rhs.id_;
+    }
+
+    template <class _CharT, class _Traits>
+    friend std::basic_ostream<_CharT, _Traits> &
+    operator<<(std::basic_ostream<_CharT, _Traits> &stream, process::id id) {
+      if (id == process::id())
+        return stream << "process::id of a non-executing process";
+      else
+        return stream << id.id_;
+    }
+
+  private:
+    friend class process;
+    mutable native_id_type id_;
+  };
+
+private:
+  struct proc_t {
+    proc_t()
+        : id_(invalid_id)
+#if defined(_WIN32)
+          ,
+          handle_(NULL)
+#endif
+    {
+    }
+    native_id_type id_;
+#if defined(_WIN32)
+    native_handle_type handle_;
+#endif
+  };
+#ifdef CXX_DELETED_FUNCTIONS_NOT_SUPPORTED
+#if !defined(_MSC_VER) || _MSC_VER > 1600
+  process &operator=(const process &) { return *this; }
+  process(const process &) {}
+#endif
+#else
+public:
+  process &operator=(const process &) = delete;
+  process(const process &) = delete;
+#endif
+public:
+#if defined(_MSC_VER) && _MSC_VER < 1600
+  process &operator=(process &other) {
+    swap(other);
+    return *this;
+  }
+  process(process &rhs) : last_error_(no_error), exit_code_(exit_success) {
+    swap(rhs);
+  }
+#endif
+  process() : last_error_(no_error), exit_code_(exit_success) {}
+
+  process(const std::string &command,
+          const std::list<std::string> &arguments = std::list<std::string>(),
+          const std::string &working_directory = std::string())
+      : last_error_(no_error), exit_code_(exit_success) {
+    execute_(command, working_directory, arguments);
+  }
+
+#ifdef __cpp_rvalue_references
+  process(process &&other) CXX_NOEXCEPT : last_error_(no_error),
+                                          exit_code_(exit_success) {
+    swap(other);
+  }
+
+  process &operator=(process &&rhs) CXX_NOEXCEPT {
+    if (joinable())
+      std::terminate();
+    swap(rhs);
+    return *this;
+  }
+#endif
+
+  void swap(process &p) CXX_NOEXCEPT {
+#ifdef __cpp_rvalue_references
+    std::swap(in_, p.in_);
+    std::swap(out_, p.out_);
+    std::swap(err_, p.err_);
+#else
+    in_.swap(p.in_);
+    out_.swap(p.out_);
+    err_.swap(p.err_);
+#endif
+    std::swap(exit_code_, p.exit_code_);
+    std::swap(last_error_, p.last_error_);
+    std::swap(cmdline_, p.cmdline_);
+    std::swap(proc_, p.proc_);
+  }
+
+  ~process() {
+    if (joinable())
+      std::terminate();
+  }
+
+  bool joinable() const CXX_NOEXCEPT {
+    if (proc_.id_ == invalid_id)
+      return false;
+#if defined(_WIN32)
+    if (WaitForSingleObject(proc_.handle_, 0) == WAIT_ABANDONED_0) {
+      in_.close();
+      out_.close();
+      err_.close();
+      proc_.handle_ = NULL;
+      proc_.id_ = invalid_id;
+    }
+#else
+    int status;
+    if (waitpid(proc_.id_, &status, WNOHANG) > 0) {
+      if (WIFEXITED(status)) {
+        in_.close();
+        out_.close();
+        err_.close();
+        proc_.id_ = invalid_id;
+      }
+    }
+#endif
+    return proc_.id_ != invalid_id;
+  }
+
+  void join() {
+    if (!joinable())
+      return;
+#if defined(_WIN32)
+    if (WaitForSingleObject(proc_.handle_, INFINITE) != WAIT_OBJECT_0) {
+      last_error_ = GetLastError();
+      in_.close();
+      out_.close();
+      err_.close();
+      return;
+    }
+    if (!GetExitCodeProcess(proc_.handle_, &exit_code_)) {
+      last_error_ = GetLastError();
+    }
+    CloseHandle(proc_.handle_);
+    proc_.handle_ = NULL;
+#else
+    int status;
+    if (waitpid(proc_.id_, &status, 0) == -1) {
+      proc_.id_ = invalid_id;
+      last_error_ = errno;
+      in_.close();
+      out_.close();
+      err_.close();
+      return;
+    }
+    if (WIFEXITED(status))
+      exit_code_ = WEXITSTATUS(status);
+#endif
+    in_.close();
+    out_.close();
+    err_.close();
+    proc_.id_ = invalid_id;
+    return;
+  }
+
+#if !defined(__cpp_lambdas)
+private:
+  static void detach_thread(HANDLE handle, HANDLE in, HANDLE out, HANDLE err) {
+    WaitForSingleObject(handle, INFINITE);
+    CloseHandle(in);
+    CloseHandle(out);
+    CloseHandle(err);
+  }
+#endif
+public:
+  void detach() {
+    if (!joinable())
+      return;
+#if defined(_WIN32)
+    CloseHandle(proc_.handle_);
+    proc_.handle_ = NULL;
+#else
+    native_id_type id = proc_.id_;
+    std::thread([id]() {
+      int status;
+      waitpid(id, &status, 0);
+    }).detach();
+#endif
+    proc_.id_ = invalid_id;
+  }
+
+  process::id get_id() const CXX_NOEXCEPT { return proc_.id_; }
+
+  native_exit_code exit_code() const { return exit_code_; }
+
+  native_error_code last_error() const { return last_error_; }
+
+  native_handle_type native_handle() const {
+#if defined(_WIN32)
+    return proc_.handle_;
+#else
+    return proc_.id_;
+#endif
+  }
+
+  const std::string &get_cmdline() const { return cmdline_; }
+
+  void kill() {
+#if defined(_WIN32)
+    TerminateProcess(proc_.handle_, EXIT_FAILURE);
+#else
+    ::kill(proc_.id_, SIGKILL);
+#endif
+  }
+
+private:
+  bool execute_(const std::string &command,
+                const std::string &working_directory,
+                const std::list<std::string> &arguments) {
+    last_error_ = no_error;
+    cmdline_ = command;
+    CXX_FOR(const std::string &arg, arguments) { cmdline_ += " " + arg; }
+
+    ext::pipe in;
+    ext::pipe out;
+    ext::pipe err;
+#if defined(_WIN32)
+    PROCESS_INFORMATION pi;
+    STARTUPINFOA si;
+    ZeroMemory(&si, sizeof(si));
+    si.cb = sizeof(si);
+    si.dwFlags |= STARTF_USESTDHANDLES;
+#ifdef __cpp_rvalue_references
+    in_ = std::move(in.write());
+    out_ = std::move(out.read());
+    err_ = std::move(err.read());
+#else
+    in_.swap(in.write());
+    out_.swap(out.read());
+    err_.swap(err.read());
+#endif
+    si.hStdInput = in.read().native_handle();
+    si.hStdOutput = out.write().native_handle();
+    si.hStdError = err.write().native_handle();
+    SetHandleInformation(in_.native_handle(), HANDLE_FLAG_INHERIT, 0);
+    SetHandleInformation(out_.native_handle(), HANDLE_FLAG_INHERIT, 0);
+    SetHandleInformation(err_.native_handle(), HANDLE_FLAG_INHERIT, 0);
+    if (!CreateProcessA(NULL, &cmdline_[0], NULL, NULL, TRUE, 0, NULL,
+                        working_directory.empty() ? NULL
+                                                  : working_directory.c_str(),
+                        &si, &pi)) {
+      last_error_ = GetLastError();
+      return false;
+    }
+    proc_.handle_ = pi.hProcess;
+    proc_.id_ = pi.dwProcessId;
+    return (proc_.handle_ != NULL);
+#else
+    char *cwd = nullptr;
+    if (!working_directory.empty()) {
+      char buf[PATH_MAX];
+      cwd = getcwd(buf, sizeof(buf));
+    }
+    proc_.id_ = fork();
+
+    if (proc_.id_ == invalid_id) {
+      last_error_ = errno;
+      if (cwd)
+        if (chdir(cwd) == -1) {
+        }
+      return false;
+    }
+
+    if (proc_.id_) {
+      in_ = std::move(in.write());
+      out_ = std::move(out.read());
+      err_ = std::move(err.read());
+      return true;
+    }
+    dup2(in.read().native_handle(), STDIN_FILENO);
+    dup2(out.write().native_handle(), STDOUT_FILENO);
+    dup2(err.write().native_handle(), STDERR_FILENO);
+    ::close(in.write().native_handle());
+    ::close(out.read().native_handle());
+    ::close(err.read().native_handle());
+
+    if (working_directory.c_str())
+      if (chdir(working_directory.c_str()) == -1) {
+      }
+
+    char **argv = new char *[arguments.size() + 2];
+    argv[0] = (char *)command.c_str();
+
+    const char **const_argv = (const char **)&argv[1];
+    for (auto &argument : arguments)
+      *const_argv++ = argument.c_str();
+    *const_argv = nullptr;
+
+    setsid();
+    execvp(argv[0], argv);
+    std::terminate();
+#endif
+  }
+
+public:
+  opstream &in() {
+    if (last_error_ != no_error)
+      throw std::runtime_error("Invalid proceses");
+    return in_;
+  }
+  ipstream &out() {
+    if (last_error_ != no_error)
+      throw std::runtime_error("Invalid proceses");
+    return out_;
+  }
+  ipstream &err() {
+    if (last_error_ != no_error)
+      throw std::runtime_error("Invalid proceses");
+    return err_;
+  }
+#ifdef __cpp_rvalue_references
+  friend process operator|(process &&lhs, process &&rhs) {
+    rhs.in() << lhs.out().rdbuf();
+    rhs.in().close();
+    rhs.cmdline_ = lhs.cmdline_ + " | " + rhs.cmdline_;
+    lhs.detach();
+    lhs.last_error_ = 0;
+    rhs.last_error_ = 0;
+    return std::move(rhs);
+  }
+#else
+  friend process operator|(process &lhs, process &rhs) {
+    rhs.in() << lhs.out().rdbuf();
+    rhs.in().close();
+    rhs.cmdline_ = lhs.cmdline_ + " | " + rhs.cmdline_;
+    lhs.detach();
+    lhs.last_error_ = 0;
+    rhs.last_error_ = 0;
+    process result;
+    result.swap(rhs);
+    return result;
+  }
+#endif
+
+private:
+  native_error_code last_error_;
+  native_exit_code exit_code_;
+  mutable proc_t proc_;
+  std::string cmdline_;
+  mutable opstream in_;
+  mutable ipstream out_;
+  mutable ipstream err_;
+};
+
+namespace this_process {
+inline process::id get_id() {
+#if defined(_WIN32)
+  return process::id(GetCurrentProcessId());
+#else
+  return process::id(getpid());
+#endif
+}
+
+inline std::string &get_cmdline() {
+  static std::string cmdline_;
+  if (!cmdline_.empty())
+    return cmdline_;
+#if defined(_WIN32)
+  std::string fileName;
+  DWORD fileNameSize = MAX_PATH;
+
+  fileName.resize(fileNameSize);
+  DWORD returnSize =
+      GetModuleFileNameA(NULL, &fileName[0], (DWORD)fileName.size());
+
+  if (returnSize) {
+    fileName.resize(returnSize);
+    if (returnSize > fileName.size()) {
+      returnSize =
+          GetModuleFileNameA(NULL, &fileName[0], (DWORD)fileName.size());
+      cmdline_ = std::move(fileName);
+      return cmdline_;
+    }
+    if (returnSize)
+      cmdline_ = std::move(fileName);
+  }
+#elif defined(__APPLE__) || defined(__FreeBSD__)
+  std::string path;
+  path.resize(PROC_PIDPATHINFO_MAXSIZE);
+  path.resize(proc_pidpath(getpid(), &path[0], path.size()));
+  cmdline_ = std::move(path);
+#elif defined(_GNU_SOURCE)
+  cmdline_ = program_invocation_name;
+#else
+#error Not Implemented :-(
+#endif
+  return cmdline_;
+}
+} // namespace this_process
+} // namespace ext
+#endif // _EXT_PROCES_
+#endif

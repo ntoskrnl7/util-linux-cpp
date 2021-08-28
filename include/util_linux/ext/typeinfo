@@ -1,0 +1,63 @@
+﻿/**
+ * @file typeinfo
+ * @author Jung-kang Lee (ntoskrnl7@gmail.com)
+ * @brief This module implements RTTI helper features.
+ *
+ * @copyright Copyright (c) 2020 C++ Extended template library Authors
+ *
+ */
+#pragma once
+#ifndef _EXT_TYPEINFO_
+#define _EXT_TYPEINFO_
+
+#include <string>
+#include <typeinfo>
+
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <Windows.h>
+#include <dbghelp.h>
+#pragma comment(lib, "Dbghelp.lib")
+#else
+#include <cxxabi.h>
+#endif
+
+namespace ext {
+/**
+ * @brief This is a function to get the undecorated type name.
+ *
+ * @param t : typeid
+ * @return Undecorated type name
+ */
+template <typename T> inline std::string get_type_name(T &t) {
+  std::string result;
+  char *name = nullptr;
+#if defined(_WIN32)
+  char nameBuffer[1024] = {
+      0,
+  };
+  if (::UnDecorateSymbolName(t.name(), nameBuffer, sizeof(nameBuffer),
+                             UNDNAME_COMPLETE) > 0)
+    result = nameBuffer;
+  else
+    result = t.name();
+#else
+  int status;
+  name = abi::__cxa_demangle(t.name(), 0, 0, &status);
+  result = (name) ? name : t.name();
+  free(name);
+#endif
+  return result;
+}
+
+/**
+ * @brief This is a function to get the undecorated type name.
+ *
+ * @tparam T : Target type
+ * @return Undecorated type name
+ */
+template <typename T> inline std::string get_type_name() {
+  return get_type_name(typeid(T));
+}
+} // namespace ext
+#endif // _EXT_TYPEINFO_

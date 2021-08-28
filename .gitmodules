@@ -1,0 +1,6 @@
+[submodule "deps/ext"]
+	path = deps/ext
+	url = https://github.com/ntoskrnl7/ext
+[submodule "deps/nlohmann-json"]
+	path = deps/nlohmann-json
+	url = https://github.com/nlohmann/json.git
