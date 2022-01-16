@@ -7,12 +7,12 @@
 
 #pragma once
 
-#include "ext/process"
-#include "ext/string"
-#include "ext/version"
+#include <ext/process>
+#include <ext/string>
+#include <ext/version>
 #include <string>
 
-#include "nlohmann/json.hpp"
+#include <nlohmann/json.hpp>
 #include <unordered_map>
 
 #if __cplusplus >= 201703L

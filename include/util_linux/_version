@@ -1,0 +1,6 @@
+
+#pragma once
+
+#define ULNX_VERSION_MAJOR 0
+#define ULNX_VERSION_MINOR 1
+#define ULNX_VERSION_PATCH 0
