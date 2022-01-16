@@ -21,8 +21,8 @@ A Header-only library that makes it easy to use Linux utility commands.
 
 ## Dependencies
 
-[nlohmann-json](https://github.com/nlohmann/json.git)
-[ext](https://github.com/ntoskrnl7/ext)
+- [nlohmann-json](https://github.com/nlohmann/json.git)
+- [ext](https://github.com/ntoskrnl7/ext)
 
 ---
 
