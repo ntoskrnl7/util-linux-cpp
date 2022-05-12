@@ -33,7 +33,7 @@ inline const ext::version lsblk_version() {
   if (lsblk.joinable())
     lsblk.join();
 
-std::size_t pos = version.find_first_of("123456789") ;
+  std::size_t pos = version.find_first_of("123456789");
   if (pos == std::string::npos)
     throw std::runtime_error("Invalid lsblk version : " + version);
 
@@ -136,6 +136,9 @@ inline nlohmann::json lsblk(const std::string &dev_path) {
   }
   if (lsblk.joinable())
     lsblk.join();
+  if (data.is_null())
+    return data;
+
   nlohmann::json ret;
 
   auto devs = *data.begin();
