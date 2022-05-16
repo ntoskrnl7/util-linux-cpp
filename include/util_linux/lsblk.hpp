@@ -7,6 +7,7 @@
 
 #pragma once
 
+#define CXX_USE_STD_ERASE_IF
 #include <ext/process>
 #include <ext/string>
 #include <ext/version>
@@ -80,7 +81,7 @@ inline std::string lsblk_json_str() {
 inline void adjust_object(nlohmann::json &object) {
   // lsblk 2.29.2에서는 FSSIZE, FSAVAIL, FSUSE%가 없으므로 해당 경우 마운트
   // 경로를 사용하여 크기 정보를 획득합니다.
-  if ((object.contains("mountpoint")) &&
+  if ((object.contains("mountpoint") && object["mountpoint"].is_string()) &&
       ((!object.contains("fssize")) || (!object.contains("fsavail")) ||
        (!object.contains("fsuse%")))) {
     size_t fssize = 0;
@@ -134,6 +135,7 @@ inline nlohmann::json lsblk(const std::string &dev_path) {
   } catch (const std::exception &e) {
     std::cerr << e.what() << '\n';
   }
+
   if (lsblk.joinable())
     lsblk.join();
   if (data.is_null())
@@ -143,25 +145,21 @@ inline nlohmann::json lsblk(const std::string &dev_path) {
 
   auto devs = *data.begin();
   auto dev = *devs.begin();
+
+  adjust_object(dev);
+
   std::string name = dev["name"];
   std::string path = dev["path"];
 
   while (dev.contains("children")) {
     auto parent = dev;
     dev = parent["children"][0];
-    adjust_object(dev);
     parent.erase("children");
-
-    for (auto it = dev.begin(); it != dev.end();)
-      if (it->is_null())
-        it = dev.erase(it);
-      else
-        ++it;
-
+    std::erase_if(dev, [](const auto &item) { return item.is_null(); });
     parent.merge_patch(dev);
     dev = std::move(parent);
+    adjust_object(dev);
   }
-  adjust_object(dev);
 
   dev["name"] = name;
   dev["path"] = path;
